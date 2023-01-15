@@ -1,0 +1,595 @@
+---
+title: ""
+subtitle: ""
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document: 
+    theme: flatly
+    highlight: kate
+runtime: shiny
+---
+
+```{r Library and Functions, echo=FALSE, message= FALSE }
+
+library("rsconnect")
+library("tidyverse")
+library("DT")
+library("dplyr")
+library("caret")
+library("shiny")
+library("MASS")
+library("ggplot2")
+library("pROC")
+library(shinyWidgets)
+
+
+source("Functions.R")
+
+```
+
+
+```{r NavBar, echo=FALSE}
+navbarPage(
+
+    "ROCky",
+       tabPanel("Introdução" , uiOutput('introduction')),
+       tabPanel("Resultados" , uiOutput('results')),
+       tabPanel("Help" , uiOutput('help')),
+       tabPanel("Bibliografia" , uiOutput('bibliog'))
+)
+
+```
+
+```{r Introduction-UI, echo=FALSE}
+
+output$introduction <- renderUI ({
+
+  
+sidebarLayout(
+  
+  position = c("right"),
+  
+  sidebarPanel("Carregar",
+                
+                fileInput("file1", "Dados",
+                    multiple = TRUE,
+                    accept = c("text/csv",
+                             "text/comma-separated-values,text/plain",
+                             ".csv")),
+                tags$hr(),
+               
+                checkboxInput('header', 'Cabeçalho', TRUE),
+                
+                radioButtons('sep', 'Separador',
+                             c("Tab"='\t',
+                               "Comma"=',',
+                               "Semicolon"=';'),
+                                selected = c("Tab"))
+                
+                ),
+  mainPanel(
+    
+    tabsetPanel(
+      tabPanel("Uso",
+               h3("ROCky analysis!"),
+                      HTML('<br>'),
+                      HTML('<p> <b>Disclaimer:</b> Irei a escrever como funciona o aplicativo. Brevemente, devo falar da importancia das curvas ROC, como funciona o aplicativo e por utlimo que se podem cargar os dados <i>Disclaimer:</i> </p>'),
+               HTML('<p> Falar das relgas: sempre as duas primerias colunas, pacientes organizados na filas, classes moleculares nas coluans </p>')
+                                   ),
+      tabPanel("Table",
+                dataTableOutput('ShowData')),
+      
+      tabPanel("Sumário",
+               htmlOutput("data_resumo"),
+               dataTableOutput('Resumo'))
+      
+    )
+    
+    )
+  
+)
+
+  
+  
+})
+
+
+
+```
+
+```{r Introduction-Server, echo=FALSE}
+
+# Ler os dados
+dados <- reactive({
+  
+   inFile <- input$file1
+   
+   if (is.null(inFile))
+      return(NULL)
+    
+      read.table(inFile$datapath,
+                          dec = ".",
+                          sep = input$sep,
+                          header = input$header,
+                          stringsAsFactors = FALSE) 
+
+})
+
+na.count <- reactive({
+  
+  sum(is.na(dados()))
+
+  
+})
+
+# sustituir NA em caso de existir
+
+aux1 <- reactive({
+
+  substitution.na(dados())
+
+})
+
+output$ShowData <- renderDT({
+      
+            DT::datatable(dados(),
+            extensions = c('FixedColumns'),
+            options = list(pageLength = 10,
+            columnDefs = list(
+                         list(className = 'dt-center', targets = "_all")),
+            fixedColumns = list(leftColumns = 2),
+            scrollX = TRUE
+            ),
+            rownames = FALSE
+            )
+})
+
+
+output$Resumo <- renderDT({
+
+            f <- summary.iqr(aux1())
+              
+            DT::datatable(
+            f,
+            extensions = c('Buttons','FixedColumns'),
+            options = list(pageLength = 5,
+            columnDefs = list(
+                         list(className = 'dt-center', targets = "_all")),
+            dom = c('rtB'),
+            buttons = c('csv', 'excel'),
+            fixedColumns = list(leftColumns = 3),
+            scrollX = TRUE
+            ),
+            rownames = FALSE
+            )
+
+})
+
+
+output$data_resumo <- renderText({
+  
+  HTML(paste("<b>Seus dados tem: </b>", 
+             br(),
+             nrow(aux1()),"amostras",
+             br(),
+             length(3:ncol(aux1())), "marcador(es)",
+             br(),
+             na.count(), "valores ausentes (substituidos por 1/5 do valor minimo)"))
+
+})
+
+# Control del processamento
+# renderDT({
+# 
+#             DT::datatable(
+#             aux1(),
+#             rownames = FALSE
+#             )
+# 
+# })
+
+
+```
+
+
+```{r Results-UI, echo=FALSE}
+
+output$results <- renderUI ({
+  
+fluidPage( 
+  
+  fluidRow(
+    column(4,
+           selectInput("casos","Casos",
+                choices=category(),
+                selected=category()[1])),
+    column(4,
+           selectInput("control","Control",
+                choices=category(),
+                selected=category()[2])),
+    column(4,
+            selectInput("marcador","Marcador",
+                choices=id(),
+                selected = id()[1]))
+    ),
+  
+  tabsetPanel(
+      tabPanel("Estatística",
+               splitLayout(
+                 plotOutput("distribution")
+                 ),
+               verticalLayout(
+                 dataTableOutput("median.table")
+                 )
+               
+               ),
+      tabPanel("ROC",
+               numericInput('cutoff',
+                            'Select Cutoff',
+                            0,
+                            min = -10000000,
+                            max = 100000000,
+                            step =0.02),
+                htmlOutput("thres"),
+               splitLayout(
+                 plotOutput("roc"),
+                 plotOutput("densidade")
+                 ),
+               verticalLayout(
+                 dataTableOutput("cuba.fim")
+                 )
+               ),
+      tabPanel("Other Metric",
+               splitLayout(
+                 dataTableOutput("metrics"),
+                 dataTableOutput("missclassification")
+               )
+               )
+      
+    )
+  
+)    
+  
+})  
+
+
+
+
+```
+
+
+```{r Results-Server-Statistics, echo=FALSE}
+
+category <- reactive({
+  
+  levels(as.factor(aux1()$Label))
+
+})
+
+
+id <- reactive({
+  
+  as.character(names(aux1())[3:ncol(aux1())])
+  
+})
+
+
+# Control de la seleção del usuario
+# renderPrint({
+# 
+#   paste0("casos",input$casos,
+#          br(),
+#          "control", input$control,
+#          br(),
+#          "marcador",input$marcador,
+#          "class", class(input$marcador))
+# 
+# })
+
+aux2 <- reactive({
+
+  data.frame(Label=aux1()$Label,
+             Value=aux1()[, which(names(aux1())== input$marcador)])
+
+})
+
+# Control de la tabela selecioando por usuario
+
+# renderDT({
+# 
+#             DT::datatable(
+#             aux2(),
+#             rownames = FALSE
+#             )
+# 
+# })
+
+output$distribution <- renderPlot({
+  
+  ggplot(aux2(),aes(x= aux2()$Label, y=aux2()$Value, color=aux2()$Label)) + 
+  geom_boxplot(notch = TRUE) +
+  scale_color_manual(values = c("orange","darkblue")) +
+    geom_jitter(shape=16, position=position_jitter(0.2))+
+  labs(y= "Valor",
+       x= "Categorias") +
+  theme_test() +
+  theme(legend.position = 'bottom',
+        legend.title = element_blank())
+  
+})
+
+median.marcador <- reactive ({
+  
+        pvalue <- format(wilcox.test(aux2()$Value ~ aux2()$Label)$p.value,
+                         scientific = TRUE,
+                         digits = 2)
+        
+        g <- aux2() %>%
+          group_by(Label) %>%
+          summarise(median=round(median(Value),digits = 2)) %>%
+          spread(key=Label,value=median) %>%
+          mutate(p.value=pvalue)
+        
+        g <- data.frame(Marcador=input$marcador,g) 
+        
+        g
+
+})
+
+
+output$median.table <- renderDT({
+    
+          DT::datatable(median.marcador(),
+                        rownames = FALSE,
+                        caption="Comparação da mediana do marcador com Wilcoxon Test",
+                        options = list(dom = 't',
+                         columnDefs = 
+                           list(list(className = 'dt-center', 
+                                     targets = "_all"))))
+  
+})
+
+
+
+```
+
+```{r Results-Server-ROC-Plot, echo= FALSE}
+
+# Definir muestras de casos e control
+
+define <- reactive({
+  
+ ifelse(aux2()$Label == input$casos, "X0","X1")
+
+  
+})
+
+# Analises ROC
+roc.results <- reactive({
+        
+            roc(define(), 
+                aux2()$Value,
+                ci =TRUE,
+                auc = TRUE,
+                ci.thresholds = TRUE,
+                levels = c("X1","X0"))
+
+})
+
+
+# Cutoff-Youden
+cutoff.optimal <- reactive({
+  
+  coords(roc.results(), best.method = "youden", x="best", transpose = TRUE)
+
+}) 
+
+
+# Plot ROC
+output$roc <- renderPlot ({
+          
+          plot(roc.results(), 
+             print.auc=TRUE,
+             print.thres= input$cutoff, 
+             auc.polygon=TRUE)
+  
+})
+
+output$thres <- renderText({
+  
+  HTML(paste("<b>OPTIMAL CUTOFF: </b>", round(cutoff.optimal()[[1]],digits = 4)))
+
+})
+
+
+casos.i <- reactive({
+  
+  subset(aux2(), aux2()$Label == input$casos)  
+  
+})
+
+output$densidade <- renderPlot({
+  
+    cases.i <- subset(aux2(), aux2()$Label == input$casos)  
+    control.i <- subset(aux2(), aux2()$Label == input$control)
+
+    ggplot() +
+    labs(title = "Gráfico de Densidade (linha tracejada é cutoff)") +
+    geom_density(data = cases.i,
+                 aes(x=cases.i$Value, fill=cases.i$Label), alpha=0.25) +
+    geom_rug(data=cases.i,
+             aes(x=cases.i$Value),color="gray") + 
+    geom_density(data = control.i,
+                 aes(x=control.i$Value, fill=control.i$Label), alpha=0.25) +
+   geom_rug(data=control.i,
+             aes(x=control.i$Value),color="gray",
+             sides ="t")+
+  scale_fill_manual(values= c("orange","darkblue"))+
+  labs(y= "Densidade",
+       x= input$marcador) +
+  geom_vline(xintercept = input$cutoff, linetype="dashed", color="black") +
+  theme_test()  +
+  theme(legend.position = 'bottom',
+        legend.title = element_blank())
+
+})
+
+
+```
+
+```{r Results-Server-ROC-Matrix, echo= FALSE}
+
+p1 <- reactive({
+
+# explorar a melhor previsão de "XO"/casoos em função do cutoff
+        a1 <- ifelse(roc.results()$predictor <= input$cutoff,
+                   "X0","X1") 
+        a1 <- table(a1,define())
+        a1
+})
+
+
+p2 <- reactive({
+
+# explorar a melhor previsão de "XO"/casoos em função do cutoff  
+        a2 <- ifelse(roc.results()$predictor >= input$cutoff,
+                     "X0","X1")
+        a2 <- table(a2,define())
+        a2
+  
+})
+
+
+key <- reactive ({
+  
+          if (p1()[1] > p2()[1]){
+          
+            aux1 <- ifelse(roc.results()$predictor <= input$cutoff,
+                             "X0","X1") 
+          }else{
+          
+            aux1 <-  ifelse(roc.results()$predictor >= input$cutoff,
+                               "X0","X1")
+
+   
+          }
+  
+  
+})
+
+conf <- reactive ({
+  
+  confusionMatrix(as.factor(key()),
+                        as.factor(define()),
+                        positive = "X0")
+  
+})
+
+
+
+cuba <- reactive ({
+  
+        MS <- Metric.Summary(conf(), "X1","X0")
+        names(MS) <- gsub("X0",input$casos,names(MS))
+        names(MS) <- gsub("X1",input$control,names(MS))
+        MS[,1] <- gsub("X0",input$casos,MS[,1])
+        MS[,1] <- gsub("X1",input$control,MS[,1])
+        MS
+       
+        
+})
+
+
+output$cuba.fim <- renderDT({
+                  
+            DT::datatable(
+            cuba(),
+            caption = "Matriz de Confusão",
+            extensions = c('Buttons'),
+            options = list(pageLength = 5,
+            columnDefs = list(
+                         list(className = 'dt-center', targets = "_all")),
+            dom = c('rtB'),
+            buttons = c('csv', 'excel'),
+            scrollX = TRUE
+            ),
+            rownames = FALSE,
+            )
+  
+})
+
+```
+
+```{r Results-Server-Other-Metric, echo= FALSE}
+
+other <- reactive({
+  
+          overall <- as.data.frame(conf()$byClass)
+          overall <- data.frame(Metrics=rownames(overall),
+                                overall)
+          overall[,2] <- round((overall[,2])*100, digits=1)
+          names(overall)[1:2] <- c("Metric", "Value(%)")
+
+  overall
+ 
+})
+
+# Control de outras metricas
+
+output$metrics <- renderDT({
+
+            DT::datatable(
+            other(),
+            caption = "Outras metricas das curvas ROC",
+            extensions = c('Buttons'),
+            options = list(pageLength = 11,
+            columnDefs = list(
+                         list(className = 'dt-center', targets = "_all")),
+            dom = c('Brftip'),
+            buttons = c('csv', 'excel'),
+            scrollX = TRUE
+            ),
+            rownames = FALSE,
+            )
+
+})
+
+
+```
+
+
+```{r Results-Server-Other-MissClassification, echo= FALSE}
+
+miss <- reactive ({
+  
+  ops <- data.frame(aux1()$ID, define(), key())
+  ops <- ops[-c(which(ops[,2] == ops[,3])),]
+  ops[,2] <- gsub("X0",input$casos,ops[,2])
+  ops[,2] <- gsub("X1",input$control,ops[,2])
+  ops[,3] <- gsub("X0",input$casos,ops[,3])
+  ops[,3] <- gsub("X1",input$control,ops[,3])
+  names(ops) <- c("ID","Referência","Previsão")
+  ops
+})
+
+
+output$missclassification <- renderDT({
+
+            DT::datatable(
+            miss(),
+            caption = "Identificação de pacientes mal classificados",
+            extensions = c('Buttons'),
+            options = list(pageLength = 11,
+            columnDefs = list(
+                         list(className = 'dt-center', targets = "_all")),
+            dom = c('Brftip'),
+            buttons = c('csv', 'excel'),
+            scrollX = TRUE
+            ),
+            rownames = FALSE,
+            )
+
+})
+
+
+```
